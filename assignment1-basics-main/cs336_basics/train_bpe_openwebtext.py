@@ -22,7 +22,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 # 如果你的文件名不同 (比如是 basics.py 或 submission.py),
 # 请修改下面这行代码！
 try:
-    from Bpe_optimize import train_bpe
+    from Bpe_optimize_Parallelized import train_bpe
 except ImportError:
     print("="*50)
     print(f"错误：无法导入 'run_train_bpe'")
@@ -37,15 +37,15 @@ except ImportError:
 #
 # (例如，Hugging Face 地址: https://huggingface.co/datasets/roneneldan/TinyStories/blob/main/TinyStories_all_data.txt)
 #
-INPUT_FILE_PATH = WORKSPACE_ROOT / "CS336data" / "TinyStories" / "TinyStoriesV2-GPT4-train.txt"
+INPUT_FILE_PATH = WORKSPACE_ROOT / "CS336data" / "Owt" / "owt_train.txt"
 
 # 你的要求:
-VOCAB_SIZE = 10000
+VOCAB_SIZE = 32000
 SPECIAL_TOKENS = ["<|endoftext|>"]
 
 # 定义输出文件的路径
-OUTPUT_VOCAB_PATH = PROJECT_ROOT / "outputfile" / "tinystories_vocab.json"
-OUTPUT_MERGES_PATH = PROJECT_ROOT / "outputfile" / "tinystories_merges.txt"
+OUTPUT_VOCAB_PATH = PROJECT_ROOT / "outputfile" / "openwebtext_vocab.json"
+OUTPUT_MERGES_PATH = PROJECT_ROOT / "outputfile" / "openwebtext_merges.txt"
 
 
 def main():
@@ -57,7 +57,7 @@ def main():
     # 检查输入文件是否存在
     if not os.path.exists(INPUT_FILE_PATH):
         print(f"\n[错误] 输入文件未找到: {INPUT_FILE_PATH}")
-        print("请从 Hugging Face 或其他来源下载 TinyStories 数据集,")
+        print("请从 Hugging Face 或其他来源下载 Owt 数据集,")
         print("并将其路径更新到此脚本中的 'INPUT_FILE_PATH' 变量。")
         return
 
@@ -89,7 +89,7 @@ def main():
     # merges 是 list[tuple[bytes, bytes]]
     print(f"正在保存合并规则到 {OUTPUT_MERGES_PATH}...")
     with open(OUTPUT_MERGES_PATH, 'w', encoding='utf-8') as f:
-        f.write("# BPE Merges (trained on TinyStories)\n")
+        f.write("# BPE Merges (trained on Owt)\n")
         f.write("# Format: token1 token2\n")
         for b1, b2 in merges:
             # 同样使用 'latin-1' 编码
