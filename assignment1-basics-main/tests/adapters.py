@@ -13,6 +13,7 @@ root = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root)) 
 from cs336_basics.Bpe_optimize import train_bpe
 from cs336_basics.Bpe_tokenizer import Tokenizer
+from cs336_basics.linear import Linear
 
 def run_linear(
     d_in: int,
@@ -32,8 +33,28 @@ def run_linear(
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
+    # 1. 创建 Linear 模块实例
+    # 我们从输入张量中获取正确的 device 和 dtype
+    device = in_features.device
+    dtype = in_features.dtype
+    
+    module = Linear(in_features=d_in, out_features=d_out, device=device, dtype=dtype)
 
-    raise NotImplementedError
+    # 2. 加载权重
+    # nn.Module.load_state_dict() 需要一个字典 (state_dict)
+    # 我们的 Linear 模块中参数的名字是 'weight'
+    # 所以我们把传入的 'weights' 张量包装成一个字典
+    state_dict_to_load = {
+        'weight': weights
+    }
+    
+    # strict=True (默认) 确保 'weight' 确实是我们模块中的一个参数
+    module.load_state_dict(state_dict_to_load)
+
+    # 3. 执行前向传播并返回结果
+    # module(in_features) 是调用 module.forward(in_features) 的快捷方式
+    output = module(in_features)
+    return output
 
 
 def run_embedding(
