@@ -13,7 +13,7 @@ root = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root)) 
 from cs336_basics.Bpe_optimize import train_bpe
 from cs336_basics.Bpe_tokenizer import Tokenizer
-from cs336_basics.linear import Linear
+from cs336_basics.transformer import Linear, Embedding, Rmsnorm
 
 def run_linear(
     d_in: int,
@@ -75,8 +75,19 @@ def run_embedding(
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
-
-    raise NotImplementedError
+    device = weights.device
+    dtype = weights.dtype
+    module = Embedding(num_embeddings=vocab_size, embedding_dim=d_model, device=device, dtype=dtype)
+    # 2. 加载权重
+    # 权重参数在我们的类中命名为 'weight'
+    state_dict_to_load = {
+        'weight': weights
+    }
+    module.load_state_dict(state_dict_to_load)
+    # 3. 执行前向传播并返回
+    # module(token_ids) 会调用 module.forward(token_ids)
+    output = module(token_ids)
+    return output
 
 
 def run_swiglu(
@@ -312,7 +323,8 @@ def run_transformer_lm(
     weights: dict[str, Tensor],
     in_indices: Int[Tensor, " batch_size sequence_length"],
 ) -> Float[Tensor, " batch_size sequence_length vocab_size"]:
-    """Given the weights of a Transformer language model and input indices,
+    r"""
+    Given the weights of a Transformer language model and input indices,
     return the output of running a forward pass on the input indices.
 
     This function should use RoPE.
@@ -379,7 +391,7 @@ def run_transformer_lm(
     Returns:
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
-    """
+    r"""
     raise NotImplementedError
 
 
@@ -403,7 +415,29 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+    # 1. 创建模块实例
+    # 从权重张量中获取正确的 device 和 dtype
+    device = weights.device
+    dtype = weights.dtype
+    
+    module = Rmsnorm(
+        d_model = d_model,
+        eps = eps,
+        device = device, 
+        dtype = dtype
+    )
+    # 2. 加载权重
+    # 权重参数在我们的类中命名为 'weight'
+    state_dict_to_load = {
+        'weight': weights
+    }
+    module.load_state_dict(state_dict_to_load)
+    
+    # 3. 执行前向传播并返回
+    # module(in_features) 会调用 module.forward(in_features)
+    output = module(in_features)
+    
+    return output
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
