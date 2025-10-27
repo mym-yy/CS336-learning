@@ -231,3 +231,73 @@ class Rmsnorm(nn.Module):
         辅助函数，用于 print(model)
         """
         return f'{self.d_model}, eps={self.eps}'
+    
+class SwiGLU(nn.Module):
+    """
+    SwiGLU 前馈网络，在 Llama 等模型中使用。
+
+    公式: SwiGLU(x) = W_2( (SiLU(xW_1)) * (xW_3) )
+          其中 SiLU(z) = z * sigmoid(z)
+    """
+    def __init__(self,
+             d_model:int,
+             d_ff:int ,
+             device=None,
+             dtype=None) -> None:
+        """
+        构造一个 SwiGLU 模块。
+
+        参数:
+            d_model: int - 模型的隐藏维度
+            device: torch.device | None - 参数存放的设备
+            dtype: torch.dtype | None - 参数的数据类型
+        """
+        super().__init__()
+        
+        self.d_model = d_model
+        self.hidden_dim = d_ff
+        factory_kwargs = {'device':device, 'dtype': dtype}
+        
+        # #1.计算中间维度
+        # d_ffn = int((8 / 3) * self.d_model)
+        # self.hidden_dim = (d_ffn + 63) // 64 * 64  # 向上取整到 64 的倍数
+        
+        # 2. 实例化三个 Linear 层 (使用我们自己实现的 Linear 类）
+        # W_1
+        self.W1 = Linear(d_model, self.hidden_dim, **factory_kwargs)
+        # W_3
+        self.W3 = Linear(d_model, self.hidden_dim, **factory_kwargs)
+        # W_2
+        self.W2 = Linear(self.hidden_dim, d_model, **factory_kwargs)
+
+    def forward(self, x:torch.Tensor) -> torch.Tensor:
+        """
+        应用 SwiGLU 变换。
+
+        参数:
+            x: torch.Tensor - 输入张量, 形状 (..., d_model)
+        
+        返回:
+            torch.Tensor - 输出张量, 形状 (..., d_model)    
+        """
+        # 1. 计算门（gate）
+        # x_W1 = x @ self.W1.weight.t()
+        x_W1 = self.W1(x)
+        gate = x_W1 * torch.sigmoid(x_W1)
+        
+        # 2. 计算投影
+        # x_W3 = x @ self.W3.weight.t()
+        x_W3 = self.W3(x)
+         
+        # 3. 逐元素相乘
+        # (..., hidden_dim) * (..., hidden_dim)
+        gated_up = gate * x_W3
+        
+        # 4. 最终线性变换
+        # output = gated_up @ self.W2.weight.t()
+        output = self.W2(gated_up)
+        
+        return output
+   
+    def extra_repr(self) -> str:
+        return f'd_model={self.d_model}, hidden_dim={self.hidden_dim}'

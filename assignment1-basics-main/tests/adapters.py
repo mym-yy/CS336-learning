@@ -13,7 +13,7 @@ root = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root)) 
 from cs336_basics.Bpe_optimize import train_bpe
 from cs336_basics.Bpe_tokenizer import Tokenizer
-from cs336_basics.transformer import Linear, Embedding, Rmsnorm
+from cs336_basics.transformer import Linear, Embedding, Rmsnorm, SwiGLU
 
 def run_linear(
     d_in: int,
@@ -119,7 +119,30 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+    
+    device = in_features.device
+    dtype = in_features.dtype
+    
+    # 1. 创建 SwiGLU 模块实例
+    # SwiGLU 的 __init__ 只需要 d_model, 它会自己计算 d_ff
+    module = SwiGLU(d_model=d_model,d_ff=d_ff,device=device,dtype=dtype)
+    
+    # 2. 组装 state_dict
+    # 我们将传入的独立张量，映射到模块期望的 "模块名.参数名" 键上
+    state_dict_to_load = {
+        "W1.weight": w1_weight,
+        "W2.weight": w2_weight,
+        "W3.weight": w3_weight
+    }
+    
+    # 3.加载权重
+    module.load_state_dict(state_dict_to_load)
+    
+    # 4. 执行前向传播并返回
+    output = module(in_features)
+    
+    return output
+
 
 
 def run_scaled_dot_product_attention(
