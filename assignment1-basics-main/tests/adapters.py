@@ -13,7 +13,7 @@ root = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root)) 
 from cs336_basics.Bpe_optimize import train_bpe
 from cs336_basics.Bpe_tokenizer import Tokenizer
-from cs336_basics.transformer import Linear, Embedding, Rmsnorm, SwiGLU
+from cs336_basics.transformer import Linear, Embedding, Rmsnorm, SwiGLU, RotaryPositionalEmbedding
 
 def run_linear(
     d_in: int,
@@ -259,7 +259,18 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
+    device = in_query_or_key.device
+    
+    module = RotaryPositionalEmbedding(
+        theta=theta,
+        d_k=d_k,
+        max_seq_len=max_seq_len,
+        device=device
+    )
+    
+    output = module(in_query_or_key, token_positions)
+    
+    return output
 
 
 def run_transformer_block(

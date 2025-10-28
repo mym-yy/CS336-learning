@@ -301,3 +301,104 @@ class SwiGLU(nn.Module):
    
     def extra_repr(self) -> str:
         return f'd_model={self.d_model}, hidden_dim={self.hidden_dim}'
+    
+class RotaryPositionalEmbedding(nn.Module):
+    """
+    旋转位置嵌入 (Rotary Positional Embedding, RoPE)。
+    
+    参数 (Buffers):
+        cos_cache (torch.Tensor): 预先计算的 cos 值
+        sin_cache (torch.Tensor): 预先计算的 sin 值
+    """
+
+    def __init__(self, 
+                 theta: float, 
+                 d_k: int, 
+                 max_seq_len: int, 
+                 device=None):
+        """
+        构造 RoPE 模块并创建缓冲区。
+
+        参数:
+            theta: float - RoPE 的 Θ 参数 (例如 10000)
+            d_k: int - Query 和 Key 向量的维度 (必须是偶数)
+            max_seq_len: int - 预先计算的最大序列长度
+            device: torch.device | None - 存储缓冲区的设备
+        """
+        super().__init__()
+        # factory_kwargs 用于统一设置 device 和 dtype
+        factory_kwargs = {'device': device, 'dtype': torch.float32}
+        
+        # 确保 d_k 是偶数
+        assert d_k % 2 == 0, f"d_k 必须是偶数，但收到了 {d_k}"
+        
+        # --- 1. 预计算 ---
+        # 计算旋转频率 inv_freq = 1.0 / (theta^{(2k / d_k)})
+        # k 的索引是 [0, 2, 4, ..., d_k-2]
+        # (d_k // 2) 个频率
+        k_indices = torch.arange(0, d_k, 2, **factory_kwargs)
+        inverse_freq = 1.0 / (theta ** (k_indices / d_k))
+        
+        # 计算位置 i
+        # time_indices表示序列中的位置i，也即[0,1,2,...,max_seq_len-1]
+        time_indices = torch.arange(max_seq_len, device=device, dtype=torch.float32)
+        
+        # 计算角度 angle_{i,k} = i * freq_k (位置 * 频率)
+        # 使用外积 (outer product) 得到 (max_seq_len, d_k/2) 的矩阵
+        angles = torch.outer(time_indices, inverse_freq)
+        
+        # 将 (max_seq_len, d_k/2) -> (max_seq_len, d_k)
+        # 使得 `[ang_0, ang_1, ...]` 变成 `[ang_0, ang_0, ang_1, ang_1, ...]`
+        angles_repeated = angles.repeat_interleave(2, dim=-1)
+
+        # --- 2. 存储 Buffer ---
+        # 计算 cos 和 sin
+        cos_cache = torch.cos(angles_repeated)
+        sin_cache = torch.sin(angles_repeated)
+        
+        # 注册为 buffer，并设置 persistent=False 
+        # 这样它们不会被保存在 state_dict 中 (因为它们可以被重新计算)
+        self.register_buffer("cos_cache", cos_cache, persistent=False)
+        self.register_buffer("sin_cache", sin_cache, persistent=False)
+
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
+        """
+        应用 RoPE 旋转。
+
+        参数:
+            x (torch.Tensor): 输入张量, 形状 (..., seq_len, d_k)
+            token_positions (torch.Tensor): 词元位置, 形状 (..., seq_len)
+        
+        返回:
+            torch.Tensor: 旋转后的张量, 形状 (..., seq_len, d_k)
+        """
+        
+        # --- 1. 从“查找表”中获取 cos 和 sin ---
+        # token_positions shape (..., seq_len)
+        # self.cos_cache shape (max_seq_len, d_k)
+        # cos shape (..., seq_len, d_k)
+        cos = self.cos_cache[token_positions]
+        sin = self.sin_cache[token_positions]
+        
+        # --- 2. 构造 x_paired ---
+        # x_paired = (-x_1, x_0, -x_3, x_2, ...)
+        # x_even: (..., seq_len, d_k/2)
+        x_even = x[..., ::2]
+        # x_odd: (..., seq_len, d_k/2)
+        x_odd = x[..., 1::2]
+        
+        x_paired_half1 = -x_odd
+        x_paired_half2 = x_even
+        
+        # 堆叠 (..., seq_len, d_k/2, 2)
+        stacked = torch.stack([x_paired_half1, x_paired_half2], dim=-1)
+        
+        # 展平 (..., seq_len, d_k)
+        # 得到 (-x_1, x_0, -x_3, x_2, ...)
+        x_paired = torch.flatten(stacked, start_dim=-2)
+        
+        # --- 3. 应用旋转 ---
+        # x' = x * cos + x_paired * sin
+        x_rotated = x * cos + x_paired * sin
+        
+        return x_rotated
