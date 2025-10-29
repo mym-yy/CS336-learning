@@ -13,7 +13,7 @@ root = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root)) 
 from cs336_basics.Bpe_optimize import train_bpe
 from cs336_basics.Bpe_tokenizer import Tokenizer
-from cs336_basics.transformer import Linear, Embedding, Rmsnorm, SwiGLU, RotaryPositionalEmbedding, Softmax, Scaled_dot_product_attention
+from cs336_basics.transformer import Linear, Embedding, Rmsnorm, SwiGLU, RotaryPositionalEmbedding, softmax, scaled_dot_product_attention, CausalMultiHeadSelfAttention
 
 def run_linear(
     d_in: int,
@@ -163,7 +163,7 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    output = Scaled_dot_product_attention(Q, K, V, mask=mask)
+    output = scaled_dot_product_attention(Q, K, V, mask=mask)
     return output
 
 
@@ -198,7 +198,30 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    # 1. 创建模块实例
+    device = in_features.device
+    dtype = in_features.dtype
+    
+    module = CausalMultiHeadSelfAttention(
+        d_model=d_model,
+        num_heads=num_heads,
+        device=device,
+        dtype=dtype
+    )
+    
+    # 2. 加载权重
+    # weights 字典包含 {"w_q.weight": ..., "w_k.weight": ..., ...}
+    module.load_state_dict({
+        "w_q.weight": q_proj_weight,
+        "w_k.weight": k_proj_weight,
+        "w_v.weight": v_proj_weight,
+        "w_o.weight": o_proj_weight
+    })
+
+    # 3. 执行前向传播并返回
+    output = module(in_features)
+
+    return output
 
 
 def run_multihead_self_attention_with_rope(
@@ -238,7 +261,45 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    device = in_features.device
+    dtype = in_features.dtype
+    
+    # 1. 创建 RoPE 模块
+    # RoPE 的维度是 "头的维度", 即 d_k = d_model // num_heads
+    d_k = d_model // num_heads
+    rope_module = RotaryPositionalEmbedding(
+        theta=theta,
+        d_k=d_k,
+        max_seq_len=max_seq_len,
+        device=device
+        # 注意: RoPE 内部总是使用 float32 计算
+    )
+    
+    # 2. 创建 MHA 模块, 并"注入" RoPE
+    module = CausalMultiHeadSelfAttention(
+        d_model=d_model,
+        num_heads=num_heads,
+        rope=rope_module,  # <--- 在这里注入 RoPE
+        device=device,
+        dtype=dtype
+    )
+    
+    # 3. 组装 state_dict (和无 RoPE 版本一样)
+    state_dict_to_load = {
+        "w_q.weight": q_proj_weight,
+        "w_k.weight": k_proj_weight,
+        "w_v.weight": v_proj_weight,
+        "w_o.weight": o_proj_weight
+    }
+    
+    # 4. 加载权重
+    module.load_state_dict(state_dict_to_load)
+
+    # 5. 执行前向传播
+    # (这次我们传入 token_positions)
+    output = module(in_features, token_positions=token_positions)
+    
+    return output
 
 
 def run_rope(
@@ -525,7 +586,7 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    output = Softmax(in_features, dim)
+    output = softmax(in_features, dim)
     return output
 
 

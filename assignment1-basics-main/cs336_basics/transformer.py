@@ -403,7 +403,7 @@ class RotaryPositionalEmbedding(nn.Module):
         
         return x_rotated
     
-def Softmax(x: torch.Tensor, dim: int) -> torch.Tensor:
+def softmax(x: torch.Tensor, dim: int) -> torch.Tensor:
     """
     沿指定维度计算数值稳定的 softmax。
 
@@ -439,7 +439,7 @@ def Softmax(x: torch.Tensor, dim: int) -> torch.Tensor:
     
     return probabilities
 
-def Scaled_dot_product_attention(
+def scaled_dot_product_attention(
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
@@ -487,7 +487,7 @@ def Scaled_dot_product_attention(
     # 5. 应用 Softmax (沿最后一个维度)
     # `attention_weights` 形状: (..., seq_len_q, seq_len_k)
     # (使用我们自己实现的 softmax 函数)
-    attention_weights = Softmax(scaled_scores, dim=-1)
+    attention_weights = softmax(scaled_scores, dim=-1)
     
     # 6. 乘以 V (Value)
     # (..., seq_len_q, seq_len_k) @ (..., seq_len_k, d_v)
@@ -496,3 +496,140 @@ def Scaled_dot_product_attention(
     
     return output
 
+class CausalMultiHeadSelfAttention(nn.Module):
+    """
+    因果多头自注意力 (Causal Multi-Head Self-Attention) 模块。
+    
+    它首先将输入 `x` 投影到 Q, K, V，然后将它们分成 `num_heads` 个头。
+    接着，它应用 RoPE (如果提供了) 和缩放点积注意力 (带因果掩码)。
+    最后，它将所有头的输出合并并通过一个最终的线性层。
+    
+    参数 (Parameters):
+        w_q (Linear): 投影到 Q (所有头) 的大线性层
+        w_k (Linear): 投影到 K (所有头) 的大线性层
+        w_v (Linear): 投影到 V (所有头) 的大线性层
+        w_o (Linear): 最终的输出投影层
+    """
+    def __init__(self,
+                 d_model: int,
+                 num_heads: int,
+                 rope: RotaryPositionalEmbedding | None = None,
+                 device= None,
+                 dtype= None) -> None:
+        """
+        构造一个 CausalMultiHeadSelfAttention 模块。
+
+        参数:
+            d_model: int - 模型的隐藏维度
+            num_heads: int - 注意力头的数量 (h)
+            device: torch.device | None - 参数存放的设备
+            dtype: torch.dtype | None - 参数的数据类型
+        """
+        super().__init__()
+        # 1.存储核心函数
+        self.d_model = d_model
+        self.num_heads = num_heads
+
+        # 2. 确保 d_model 可以被 num_heads 整除
+        assert d_model % num_heads == 0, \
+            f"d_model ({d_model}) 必须能被 num_heads ({num_heads}) 整除"
+        
+        # 3. 计算每个头的维度 (d_k, d_v)
+        # 遵循 Vaswani 等人 [2017] 的论文, d_k = d_v = d_model / h
+        self.d_k = d_model // num_heads
+        self.d_v = self.d_k # d_v = d_k
+        self.rope = rope
+
+        factory_kwargs = {'device':device, 'dtype':dtype}
+
+        # 4. 创建 "投影" 层 (Projection Layers)
+        # 我们使用 3 个 "大" 线性层来一次性计算所有头的 Q, K, V       
+        # W_q: (d_model) -> (h * d_k) = (d_model)
+        self.w_q = Linear(d_model, d_model, **factory_kwargs)
+        # W_k: (d_model) -> (h * d_k) = (d_model)
+        self.w_k = Linear(d_model, d_model, **factory_kwargs)
+        # W_v: (d_model) -> (h * d_v) = (d_model)
+        self.w_v = Linear(d_model, d_model, **factory_kwargs)
+        # W_o: (h * d_v) = (d_model) -> (d_model)
+        self.w_o = Linear(d_model, d_model, **factory_kwargs)
+    
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None) -> torch.Tensor:
+        """
+        执行因果多头自注意力的前向传播。
+
+        参数:
+            x (torch.Tensor): 输入张量, 形状 (batch_size, seq_len, d_model)
+        
+        返回:
+            torch.Tensor: 注意力输出, 形状 (batch_size, seq_len, d_model)
+        """
+        # 获取输入的形状信息
+        # B = batch_size, S = seq_len, D = d_model
+        (B, S, D) = x.shape
+
+        # --- 1. 计算 Q, K, V 的 "大投影" ---
+        # (B, S, D) -> (B, S, h*d_k) = (B, S, D)
+        q_proj = self.w_q(x)
+        k_proj = self.w_k(x)
+        v_proj = self.w_v(x)
+        
+        # --- 2. 将 "大投影" 分割成 "多头" ---
+        # (B, S, D) -> (B, S, h, d_k) -> (B, h, S, d_k)
+        
+        # q_multihead 形状: (B, h, S, d_k)
+        q_multihead = q_proj.view(B, S, self.num_heads, self.d_k).transpose(1, 2)
+        # k_multihead 形状: (B, h, S, d_k)
+        k_multihead = k_proj.view(B, S, self.num_heads, self.d_k).transpose(1, 2)
+        # v_multihead 形状: (B, h, S, d_v)
+        v_multihead = v_proj.view(B, S, self.num_heads, self.d_v).transpose(1, 2)
+        
+        # (注意：RoPE 会在这一步被应用到 q_multihead 和 k_multihead 上,
+        # 在这里应用 RoPE (如果提供了) ---
+        if self.rope is not None:
+            # 确保 token_positions 也被提供了
+            assert token_positions is not None, \
+                "RoPE 模块存在, 但 token_positions 未提供"
+            
+            # RoPE 期望 (..., S, d_k) 形状
+            # q_multihead 是 (B, h, S, d_k), token_positions 是 (B, S)
+            
+            # token_positions (B, S) -> (B, 1, S) -> (B, h, S)
+            # 以便广播到 (B, h, S, d_k)
+            pos_emb = token_positions.unsqueeze(1).expand(-1, self.num_heads, -1)
+            
+            q_multihead = self.rope(q_multihead, pos_emb)
+            k_multihead = self.rope(k_multihead, pos_emb)
+        # --- RoPE 应用结束 ---
+
+        # --- 3. 创建 "因果掩码" (Causal Mask) ---
+        # 这是一个形状为 (S, S) 的下三角矩阵
+        # `True` = 保留 (j <= i), `False` = 屏蔽 (j > i)
+        # `torch.tril` (下三角) 正好做这个
+        causal_mask = torch.tril(
+            torch.ones((S, S), device=x.device, dtype=torch.bool)
+        )
+        # 这个 (S, S) 的掩码会自动广播到 (B, h, S, S)
+        
+        # --- 4. 应用 "缩放点积注意力" ---
+        # (B, h, S, d_k) @ (B, h, S, d_v) -> (B, h, S, d_v)
+        # (我们调用自己实现的函数)
+        attn_output = scaled_dot_product_attention(
+            q_multihead, k_multihead, v_multihead, mask=causal_mask
+        )
+        
+        # --- 5. "合并" (Concatenate) 所有头的输出 ---
+        # (B, h, S, d_v) -> (B, S, h, d_v) [转置]
+        attn_output_transposed = attn_output.transpose(1, 2)
+        
+        # (B, S, h, d_v) -> (B, S, h*d_v) = (B, S, D) [合并]
+        # .contiguous() 确保张量在内存中是连续的，以便 .view() 可以工作
+        attn_output_concat = attn_output_transposed.contiguous().view(B, S, D)
+        
+        # --- 6. 应用 "最终输出投影" (W_o) ---
+        # (B, S, D) -> (B, S, D)
+        final_output = self.w_o(attn_output_concat)
+        
+        return final_output
+
+    def extra_repr(self) -> str:
+        return f'd_model={self.d_model}, num_heads={self.num_heads}'
