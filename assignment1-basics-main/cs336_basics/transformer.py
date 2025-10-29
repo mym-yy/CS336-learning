@@ -438,3 +438,61 @@ def Softmax(x: torch.Tensor, dim: int) -> torch.Tensor:
     probabilities = exps / sum_of_exps
     
     return probabilities
+
+def Scaled_dot_product_attention(
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        mask: torch.Tensor | None = None
+) -> torch.Tensor:
+    """
+      计算缩放点积注意力。
+    
+    公式: Attention(Q, K, V) = softmax( (QK^T / sqrt(d_k)) + M ) @ V
+
+    参数:
+        q (torch.Tensor): Queries 张量  形状 (..., seq_len_q, d_k)
+        k (torch.Tensor): Keys 张量  形状 (..., seq_len_k, d_k)
+        v (torch.Tensor): Values 张量  形状 (..., seq_len_k, d_v)
+        mask (torch.Tensor | None): 布尔掩码.
+                                    形状 (..., seq_len_q, seq_len_k)
+                                    True = 保留, False = 屏蔽 (设为 -inf)
+                                    (注意：... 维度必须与 QK^T 的 ... 维度兼容)
+    返回:
+        torch.Tensor: 注意力输出张量, 形状 (..., seq_len_q, d_v)
+    """
+    # 1. 获取 d_k (K 的最后一个维度)
+    d_k = k.size(-1)
+    
+    # 2. 计算 QK^T (缩放前的分数)
+    # q 形状: (..., seq_len_q, d_k)
+    # k.transpose(-2, -1) 形状: (..., d_k, seq_len_k)
+    # scores 形状: (..., seq_len_q, seq_len_k)
+    scores = torch.matmul(q, k.transpose(-2, -1))
+    
+    # 3. 应用缩放 (Scale)
+    # 使用 torch.tensor 来确保在正确设备上
+    scale_factor = torch.sqrt(torch.tensor(d_k, dtype=q.dtype, device=q.device))
+    scaled_scores = scores / scale_factor
+    
+    # 4. 应用掩码 (Mask) - 核心技巧
+    if mask is not None:
+        # 我们需要在 `mask == False` 的地方填充一个非常小的数 (负无穷)
+        # `torch.finfo` 提供了该 dtype 能表示的最小值
+        # .masked_fill_ (in-place) 或 .masked_fill (out-of-place)
+        scaled_scores = scaled_scores.masked_fill(
+            mask == False, torch.finfo(scaled_scores.dtype).min
+        )
+        
+    # 5. 应用 Softmax (沿最后一个维度)
+    # `attention_weights` 形状: (..., seq_len_q, seq_len_k)
+    # (使用我们自己实现的 softmax 函数)
+    attention_weights = Softmax(scaled_scores, dim=-1)
+    
+    # 6. 乘以 V (Value)
+    # (..., seq_len_q, seq_len_k) @ (..., seq_len_k, d_v)
+    # output 形状: (..., seq_len_q, d_v)
+    output = torch.matmul(attention_weights, v)
+    
+    return output
+

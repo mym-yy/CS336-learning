@@ -13,7 +13,7 @@ root = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root)) 
 from cs336_basics.Bpe_optimize import train_bpe
 from cs336_basics.Bpe_tokenizer import Tokenizer
-from cs336_basics.transformer import Linear, Embedding, Rmsnorm, SwiGLU, RotaryPositionalEmbedding, Softmax
+from cs336_basics.transformer import Linear, Embedding, Rmsnorm, SwiGLU, RotaryPositionalEmbedding, Softmax, Scaled_dot_product_attention
 
 def run_linear(
     d_in: int,
@@ -163,7 +163,8 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    output = Scaled_dot_product_attention(Q, K, V, mask=mask)
+    return output
 
 
 def run_multihead_self_attention(
