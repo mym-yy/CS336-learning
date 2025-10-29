@@ -402,3 +402,39 @@ class RotaryPositionalEmbedding(nn.Module):
         x_rotated = x * cos + x_paired * sin
         
         return x_rotated
+    
+def Softmax(x: torch.Tensor, dim: int) -> torch.Tensor:
+    """
+    沿指定维度计算数值稳定的 softmax。
+
+    参数:
+        x (torch.Tensor): 输入张量 (logits)
+        dim (int): 要应用 softmax 的维度
+    
+    返回:
+        torch.Tensor: 归一化后的概率张量，形状与 x 相同
+    """
+    # 1. 减去最大值以保证数值稳定性
+    #    torch.max(x, dim) 会返回 (values, indices)
+    #    我们只需要 values。
+    #    !! 关键: 必须设置 keepdim=True !!
+    #    这使得 max_val 的形状与 x 兼容 (例如 x 是 [B, S, D], max_val 是 [B, S, 1])
+    #    这样 "x - max_val" 才能正确广播 (broadcasting)。
+    max_val = torch.max(x, dim=dim, keepdim=True).values
+    x_shifted = x - max_val
+    
+    # 2. 计算指数
+    #    由于 x_shifted 中的最大值现在是 0，exps 中的最大值就是 e^0 = 1
+    #    这就避免了上溢 (overflow) 变成 inf
+    exps = torch.exp(x_shifted)
+    
+    # 3. 计算分母 (所有指数的总和)
+    #    !! 关键: 这里也必须设置 keepdim=True !!
+    #    这使得分母的形状与 exps 兼容 (例如 [B, S, 1])
+    #    以便下一步的除法能够正确广播。
+    sum_of_exps = torch.sum(exps, dim=dim, keepdim=True)
+    
+    # 4. 相除得到最终概率
+    probabilities = exps / sum_of_exps
+    
+    return probabilities

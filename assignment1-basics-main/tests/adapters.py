@@ -13,7 +13,7 @@ root = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root)) 
 from cs336_basics.Bpe_optimize import train_bpe
 from cs336_basics.Bpe_tokenizer import Tokenizer
-from cs336_basics.transformer import Linear, Embedding, Rmsnorm, SwiGLU, RotaryPositionalEmbedding
+from cs336_basics.transformer import Linear, Embedding, Rmsnorm, SwiGLU, RotaryPositionalEmbedding, Softmax
 
 def run_linear(
     d_in: int,
@@ -524,7 +524,8 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+    output = Softmax(in_features, dim)
+    return output
 
 
 def run_cross_entropy(
