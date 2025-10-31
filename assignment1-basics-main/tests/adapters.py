@@ -13,7 +13,7 @@ root = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root)) 
 from cs336_basics.Bpe_optimize import train_bpe
 from cs336_basics.Bpe_tokenizer import Tokenizer
-from cs336_basics.transformer import Linear, Embedding, Rmsnorm, SwiGLU, RotaryPositionalEmbedding, softmax, scaled_dot_product_attention, CausalMultiHeadSelfAttention
+from cs336_basics.transformer import *
 
 def run_linear(
     d_in: int,
@@ -142,7 +142,6 @@ def run_swiglu(
     output = module(in_features)
     
     return output
-
 
 
 def run_scaled_dot_product_attention(
@@ -405,7 +404,42 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    # 1. 获取 device, dtype 和形状信息
+    device = in_features.device
+    dtype = in_features.dtype
+    
+    module = TransformerBlock(
+        d_model=d_model,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        max_seq_len=max_seq_len, # 传递 RoPE 参数
+        theta=theta,           # 传递 RoPE 参数
+        device=device,
+        dtype=dtype
+    )
+
+    state_dict_to_load = {
+    # MHA 子层 (你的旧命名)
+        "attn_norm.weight": weights["ln1.weight"],
+        "attn.w_q.weight": weights["attn.q_proj.weight"],
+        "attn.w_k.weight": weights["attn.k_proj.weight"],
+        "attn.w_v.weight": weights["attn.v_proj.weight"],
+        "attn.w_o.weight": weights["attn.output_proj.weight"],
+        
+        # FFN 子层 (你的旧命名)
+        "ffn_norm.weight": weights["ln2.weight"],
+        "ffn.W1.weight": weights["ffn.w1.weight"],
+        "ffn.W2.weight": weights["ffn.w2.weight"],
+        "ffn.W3.weight": weights["ffn.w3.weight"]
+    
+    }
+    
+    # 5. 加载权重
+    module.load_state_dict(state_dict_to_load)
+
+    output = module(in_features)
+
+    return output
 
 
 def run_transformer_lm(

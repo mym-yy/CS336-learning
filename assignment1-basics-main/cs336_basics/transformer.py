@@ -414,30 +414,48 @@ def softmax(x: torch.Tensor, dim: int) -> torch.Tensor:
     返回:
         torch.Tensor: 归一化后的概率张量，形状与 x 相同
     """
-    # 1. 减去最大值以保证数值稳定性
-    #    torch.max(x, dim) 会返回 (values, indices)
-    #    我们只需要 values。
-    #    !! 关键: 必须设置 keepdim=True !!
-    #    这使得 max_val 的形状与 x 兼容 (例如 x 是 [B, S, D], max_val 是 [B, S, 1])
-    #    这样 "x - max_val" 才能正确广播 (broadcasting)。
-    max_val = torch.max(x, dim=dim, keepdim=True).values
-    x_shifted = x - max_val
+    # # 1. 减去最大值以保证数值稳定性
+    # #    torch.max(x, dim) 会返回 (values, indices)
+    # #    我们只需要 values。
+    # #    !! 关键: 必须设置 keepdim=True !!
+    # #    这使得 max_val 的形状与 x 兼容 (例如 x 是 [B, S, D], max_val 是 [B, S, 1])
+    # #    这样 "x - max_val" 才能正确广播 (broadcasting)。
+    # max_val = torch.max(x, dim=dim, keepdim=True).values
+    # x_shifted = x - max_val
     
-    # 2. 计算指数
-    #    由于 x_shifted 中的最大值现在是 0，exps 中的最大值就是 e^0 = 1
-    #    这就避免了上溢 (overflow) 变成 inf
+    # # 2. 计算指数
+    # #    由于 x_shifted 中的最大值现在是 0，exps 中的最大值就是 e^0 = 1
+    # #    这就避免了上溢 (overflow) 变成 inf
+    # exps = torch.exp(x_shifted)
+    
+    # # 3. 计算分母 (所有指数的总和)
+    # #    !! 关键: 这里也必须设置 keepdim=True !!
+    # #    这使得分母的形状与 exps 兼容 (例如 [B, S, 1])
+    # #    以便下一步的除法能够正确广播。
+    # sum_of_exps = torch.sum(exps, dim=dim, keepdim=True)
+    
+    # # 4. 相除得到最终概率
+    # probabilities = exps / sum_of_exps
+    """
+    在写transformerBlock时进行第一次修改
+    需要提高精度
+    沿指定维度计算数值稳定的 softmax。
+    (在高精度 float32 中执行计算以保证稳定性
+    """
+    # 1. 存储原始数据类型 (例如 bfloat16)
+    original_dtype = x.dtype
+    
+    # 2. 向上转换为 float32 进行高精度计算 (!! 关键步骤 !!)
+    x_fp32 = x.to(torch.float32)
+
+    # 3. 在 float32 上执行所有计算
+    max_val = torch.max(x_fp32, dim=dim, keepdim=True).values
+    x_shifted = x_fp32 - max_val
     exps = torch.exp(x_shifted)
-    
-    # 3. 计算分母 (所有指数的总和)
-    #    !! 关键: 这里也必须设置 keepdim=True !!
-    #    这使得分母的形状与 exps 兼容 (例如 [B, S, 1])
-    #    以便下一步的除法能够正确广播。
     sum_of_exps = torch.sum(exps, dim=dim, keepdim=True)
-    
-    # 4. 相除得到最终概率
     probabilities = exps / sum_of_exps
-    
-    return probabilities
+
+    return probabilities.to(original_dtype)
 
 def scaled_dot_product_attention(
         q: torch.Tensor,
@@ -633,3 +651,93 @@ class CausalMultiHeadSelfAttention(nn.Module):
 
     def extra_repr(self) -> str:
         return f'd_model={self.d_model}, num_heads={self.num_heads}'
+    
+class TransformerBlock(nn.Module):
+    """
+    一个预规范 (Pre-Norm) 的 Transformer 模块 (遵照 §3.5 和 图 2)
+    
+    它包含两个子层:
+    1. 多头自注意力 (Multi-Head Self-Attention)
+    2. 前馈网络 (Feed-Forward Network)
+    
+    在每个子层中，都使用 "RMSNorm -> 主操作 -> 残差连接" 的流程。
+    """
+    def __init__(self, 
+                 d_model: int, 
+                 num_heads: int, 
+                 d_ff: int,
+                 max_seq_len: int,
+                 theta: int,
+                 device = None,
+                 dtype = None) -> None:
+        """
+        初始化 Transformer 模块
+
+        参数:
+        d_model: 模型的维度 (int)
+        num_heads: 多头注意力的头的数量 (int)
+        d_ff: 前馈网络 (FFN) 的内部维度 (int)
+        device: torch.device | None - 参数存放的设备
+        dtype: torch.dtype | None - 参数的数据类型
+        """
+        super().__init__()
+
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_ff = d_ff
+        factory_kwargs = {'device': device, 'dtype': dtype}
+
+        d_k = d_model // num_heads
+        self.rope = RotaryPositionalEmbedding(
+            theta=theta,
+            d_k=d_k,
+            max_seq_len=max_seq_len,
+            device=device
+        )
+
+        # --- 第一个子层：MHA ---
+        # 1. 第一个子层的归一化 (Pre-Normalization)
+        self.attn_norm = Rmsnorm(d_model=d_model, **factory_kwargs)
+        self.attn = CausalMultiHeadSelfAttention(
+            d_model=d_model,
+            num_heads=num_heads,
+            rope=self.rope,  # 基础测试不需要 RoPE
+            **factory_kwargs
+        )
+        # 2. 前馈网络子层 (FFN Sub-layer)
+        self.ffn_norm = Rmsnorm(d_model=d_model, **factory_kwargs)
+        self.ffn = SwiGLU(
+            d_model=d_model,
+            d_ff=d_ff,
+            **factory_kwargs
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        执行 Transformer 块的前向传播。
+        
+        公式:
+        y = x + MHA(RMSNorm(x))
+        z = y + FFN(RMSNorm(y))
+
+        参数:
+            x (torch.Tensor): 输入张量, 形状 (batch_size, seq_len, d_model)
+        
+        返回:
+            torch.Tensor: 块的输出, 形状 (batch_size, seq_len, d_model)
+        """
+        (B, S, D) = x.shape
+        # (S,)
+        token_positions_seq = torch.arange(S, device=x.device)
+        # (S,) -> (1, S) -> (B, S)
+        token_positions = token_positions_seq.unsqueeze(0).expand(B, -1)
+
+        # --- 第一个子层：MHA + 残差连接 ---
+        # 对应公式: y = x + MultiHeadSelfAttention(RMSNorm(x))
+        y = x + self.attn(self.attn_norm(x), token_positions=token_positions)
+
+        # --- 第二个子层：FFN + 残差连接 ---
+        # z = y + FFN(RMSNorm(y))
+        z = y + self.ffn(self.ffn_norm(y))
+
+        return z
