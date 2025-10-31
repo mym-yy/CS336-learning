@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 from torch.nn.parameter import Parameter
+from torch.optim.optimizer import Optimizer
+from collections.abc import Callable, Iterable
 
 class Linear(nn.Module):
     """
@@ -846,3 +848,192 @@ class TransformerLM(nn.Module):
         logits = self.lm_head(x_norm)
         
         return logits
+    
+def cross_entropy(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    """
+    计算数值稳定的交叉熵损失 (LogSumExp 技巧)。
+
+    参数:
+        logits (torch.Tensor): 
+            模型的原始输出 (B, ..., V)
+            其中 V = vocab_size
+        
+        targets (torch.Tensor): 
+            正确答案的索引 (B, ...)
+            (形状必须与 logits 除去最后一个维度后匹配)
+    
+    返回:
+        torch.Tensor: 
+            在所有维度上平均后的损失 (一个标量)
+    """
+    
+    # 0. 确保在高精度下计算
+    original_dtype = logits.dtype
+    logits_fp32 = logits.to(torch.float32)
+    
+    # 词汇表维度 (V) 在最后一个
+    vocab_dim = -1
+    
+    # 1. 计算 LogSumExp (分母部分)
+    # lse = c + log(sum(exp(o - c)))
+    
+    # c = max(o)
+    # (B, ..., V) -> (B, ..., 1)
+    max_logits = torch.max(logits_fp32, dim=vocab_dim, keepdim=True).values
+    
+    # o - c
+    shifted_logits = logits_fp32 - max_logits
+    
+    # sum(exp(o - c))
+    sum_exp = torch.sum(torch.exp(shifted_logits), dim=vocab_dim, keepdim=True)
+    
+    # log(sum(exp(o - c)))
+    log_sum_exp = torch.log(sum_exp)
+    
+    # c + log(...)
+    # (B, ..., 1)
+    stable_log_sum_exp = max_logits + log_sum_exp
+    
+    # 2. 获取 o_i[x_{i+1}] (分子部分)
+    # 我们需要从 logits 中 "gather" (收集) 正确答案的 logits
+    
+    # (B, ...) -> (B, ..., 1)
+    targets_expanded = targets.unsqueeze(-1)
+    
+    # correct_logits 形状: (B, ..., 1)
+    correct_logits = torch.gather(
+        logits_fp32, dim=vocab_dim, index=targets_expanded
+    )
+    
+    # 3. 计算最终损失
+    # l_i = LogSumExp(o) - o_i[x_{i+1}]
+    # (B, ..., 1)
+    loss = stable_log_sum_exp - correct_logits
+    
+    # 4. 返回整个批次的平均值
+    # (B, ..., 1) -> () [标量]
+    avg_loss = torch.mean(loss)
+    
+    return avg_loss
+
+class AdamW(Optimizer):
+    """
+    实现 AdamW 优化器 (Adam with Decoupled Weight Decay)。
+    
+    它在 PyTorch 的 Optimizer 基类上构建。
+    """
+
+    def __init__(self, 
+                 params: Iterable[torch.nn.Parameter], 
+                 lr: float = 1e-3, 
+                 betas: tuple[float, float] = (0.9, 0.999), 
+                 eps: float = 1e-8, 
+                 weight_decay: float = 1e-2):
+        """
+        初始化 AdamW 优化器。
+
+        参数:
+            params: 模型中要优化的参数 (例如 model.parameters())
+            lr (float): 学习率 (α)
+            betas (tuple[float, float]): (β1, β2) - m_t 和 v_t 的衰减率
+            eps (float): epsilon (ε) - 添加到分母以保持数值稳定
+            weight_decay (float): 权重衰减 (λ)
+        """
+        # --- 1. 验证超参数 ---
+        if not 0.0 <= lr:
+            raise ValueError(f"无效的学习率: {lr}")
+        if not 0.0 <= eps:
+            raise ValueError(f"无效的 epsilon 值: {eps}")
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError(f"无效的 beta 参数 (β1): {betas[0]}")
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError(f"无效的 beta 参数 (β2): {betas[1]}")
+        if not 0.0 <= weight_decay:
+            raise ValueError(f"无效的 weight_decay 值: {weight_decay}")
+
+        # --- 2. 准备 'defaults' 字典 ---
+        # 这是 torch.optim.Optimizer 的标准做法
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
+        
+        # --- 3. 调用父类构造函数 ---
+        super().__init__(params, defaults)
+
+    def step(self, closure: Callable | None = None):
+        """
+        执行一步优化。
+        """
+        loss = None
+        if closure is not None:
+            # (这个我们用不到，但是 API 规范要求有)
+            loss = closure()
+
+        # 遍历所有参数组 (通常只有一组)
+        for group in self.param_groups:
+            
+            # --- A. 获取该组的超参数 ---
+            lr = group['lr']
+            beta1, beta2 = group['betas']
+            eps = group['eps']
+            weight_decay = group['weight_decay']
+
+            # 遍历该组中的所有参数 (p)
+            for p in group['params']:
+                if p.grad is None:
+                    continue # 跳过没有梯度的参数
+                
+                grad = p.grad.data
+                if grad.is_sparse:
+                    # Adam 不支持稀疏梯度
+                    raise RuntimeError("AdamW 不支持稀疏梯度")
+
+                # --- B. 获取/初始化该参数的状态 (State) ---
+                state = self.state[p]
+
+                # 第一次运行时，状态字典为空
+                if len(state) == 0:
+                    state['step'] = 0 # 迭代次数 t
+                    # m_t (一阶矩, 动量)
+                    state['exp_avg'] = torch.zeros_like(p.data, memory_format=torch.preserve_format)
+                    # v_t (二阶矩, 自适应学习率)
+                    state['exp_avg_sq'] = torch.zeros_like(p.data, memory_format=torch.preserve_format)
+                
+                # 从状态中检索 m_t 和 v_t
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                
+                # 步数 t 加 1
+                state['step'] += 1
+                t = state['step']
+
+                # --- C. 执行 AdamW 核心更新 ---
+
+                # 1. (W) Decoupled Weight Decay
+                # p.data = p.data * (1.0 - lr * weight_decay)
+                # (注意: 我们在梯度更新之前执行此操作)
+                p.data.mul_(1.0 - lr * weight_decay)
+
+                # 2. (Adam) 更新 m_t (一阶矩)
+                # m_t = beta1 * m_{t-1} + (1-beta1) * g_t
+                exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+                
+                # 3. (Adam) 更新 v_t (二阶矩)
+                # v_t = beta2 * v_{t-1} + (1-beta2) * g_t^2
+                exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+
+                # 4. (Adam) 计算偏差修正 (Bias Correction)
+                # (t 是当前的步数)
+                bias_correction1 = 1.0 - beta1 ** t
+                bias_correction2 = 1.0 - beta2 ** t
+
+                # 5. (Adam) 计算分母: sqrt(\hat{v}_t) + eps
+                # denom = sqrt(v_t / bias_correction2) + eps
+                denom = (exp_avg_sq / bias_correction2).sqrt().add_(eps)
+
+                # 6. (Adam) 计算修正后的 m_t: \hat{m}_t
+                # m_hat_t = m_t / bias_correction1
+                m_hat_t = exp_avg / bias_correction1
+
+                # 7. (Adam) 最终的梯度更新
+                # p.data = p.data - lr * (\hat{m}_t / denom)
+                p.data.addcdiv_(m_hat_t, denom, value=-lr)
+
+        return loss
