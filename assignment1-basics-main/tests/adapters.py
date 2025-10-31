@@ -522,7 +522,72 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     r"""
-    raise NotImplementedError
+    """
+    测试适配器：
+    1. 创建完整的 TransformerLM 模块。
+    2. 加载 `weights` (完整的 state_dict)。
+    3. 执行前向传播。
+    """
+    
+    device = in_indices.device
+    # 注意：权重(weights)的 dtype 可能与 token_ids (int) 不同
+    # 我们从权重字典中任意取一个张量来获取正确的 dtype
+    example_weight = next(iter(weights.values()))
+    dtype = example_weight.dtype
+
+    # 1. 创建模块实例
+    module = TransformerLM(
+        vocab_size=vocab_size,
+        context_length=context_length,
+        num_layers=num_layers,
+        d_model=d_model,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        theta=rope_theta,
+        device=device,
+        dtype=dtype
+    )
+    # 2. 加载完整的 state_dict
+    # `weights` 字典 ("蓝图") 包含了所有键，例如：
+    # "token_embeddings.weight"
+    # "layers.0.ln1.weight"
+    # "layers.0.attn.q_proj.weight"
+    # ...
+    # "final_norm.weight"
+    # "lm_head.weight"
+    #
+    # 只要我们的 `TransformerLM` 类命名正确，这行代码就能工作。
+    state_dict_to_load = {}
+    # 翻译 顶层 权重
+    state_dict_to_load["token_embeddings.weight"] = weights["token_embeddings.weight"]
+    state_dict_to_load["final_norm.weight"] = weights["ln_final.weight"]
+    state_dict_to_load["lm_head.weight"] = weights["lm_head.weight"]
+    
+    # 翻译 N 个 TransformerBlock 内部的权重
+    for i in range(num_layers):
+        # 翻译 Norms
+        state_dict_to_load[f"layers.{i}.attn_norm.weight"] = weights[f"layers.{i}.ln1.weight"]
+        state_dict_to_load[f"layers.{i}.ffn_norm.weight"] = weights[f"layers.{i}.ln2.weight"]
+        
+        # 翻译 MHA
+        state_dict_to_load[f"layers.{i}.attn.w_q.weight"] = weights[f"layers.{i}.attn.q_proj.weight"]
+        state_dict_to_load[f"layers.{i}.attn.w_k.weight"] = weights[f"layers.{i}.attn.k_proj.weight"]
+        state_dict_to_load[f"layers.{i}.attn.w_v.weight"] = weights[f"layers.{i}.attn.v_proj.weight"]
+        state_dict_to_load[f"layers.{i}.attn.w_o.weight"] = weights[f"layers.{i}.attn.output_proj.weight"]
+        
+        # 翻译 FFN (假设你的 SwiGLU 命名是 w1, w2, w3)
+        state_dict_to_load[f"layers.{i}.ffn.W1.weight"] = weights[f"layers.{i}.ffn.w1.weight"]
+        state_dict_to_load[f"layers.{i}.ffn.W2.weight"] = weights[f"layers.{i}.ffn.w2.weight"]
+        state_dict_to_load[f"layers.{i}.ffn.W3.weight"] = weights[f"layers.{i}.ffn.w3.weight"]
+    
+    # 3. 加载这个 "翻译" 后的字典
+    module.load_state_dict(state_dict_to_load)
+
+    # 4. 执行前向传播
+    # `token_ids` 就是 `in_features`
+    logits = module(in_indices)
+    
+    return logits
 
 
 def run_rmsnorm(

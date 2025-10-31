@@ -741,3 +741,108 @@ class TransformerBlock(nn.Module):
         z = y + self.ffn(self.ffn_norm(y))
 
         return z
+
+class TransformerLM(nn.Module):
+    """
+    一个完整的、仅解码器 (Decoder-Only) 的 Transformer 语言模型。
+    
+    它由一个词嵌入层、N 个 Transformer 块和一个最终的 LM Head 组成。
+    
+    参数 (Parameters):
+        token_embeddings (Embedding): 词嵌入层
+        layers (nn.ModuleList): N 个 TransformerBlock 的堆叠
+        final_norm (RMSNorm): 应用于最终输出的前置归一化
+        lm_head (Linear): 最终的线性层 (LM Head)，用于投影到词汇表
+    """
+    def __init__(self, 
+                 vocab_size: int, 
+                 context_length: int, 
+                 num_layers: int,
+                 d_model: int, 
+                 num_heads: int, 
+                 d_ff: int,
+                 theta: float = 10000.0, # RoPE 的 theta 默认值
+                 device=None, 
+                 dtype=None):
+        """
+        构造一个 TransformerLM 模块。
+
+        参数:
+            vocab_size: int - 词汇表大小
+            context_length: int - 最大上下文/序列长度 (用于 RoPE)
+            num_layers: int - Transformer 块的数量
+            d_model: int - 模型的隐藏维度
+            num_heads: int - 注意力头的数量
+            d_ff: int - FFN (SwiGLU) 的隐藏维度
+            theta: float - RoPE 的 theta 参数
+            device: torch.device | None - 参数存放的设备
+            dtype: torch.dtype | None - 参数的数据类型
+        """
+        super().__init__()
+        
+        factory_kwargs = {'device': device, 'dtype': dtype}
+
+        # 1. 词嵌入层
+        self.token_embeddings = Embedding(
+            num_embeddings=vocab_size,
+            embedding_dim=d_model,
+            **factory_kwargs
+        )
+        
+        # 2. N 个 Transformer 块
+        # 我们使用 nn.ModuleList 来正确地注册所有子模块
+        self.layers = nn.ModuleList()
+        for _ in range(num_layers):
+            block = TransformerBlock(
+                d_model=d_model,
+                num_heads=num_heads,
+                d_ff=d_ff,
+                max_seq_len=context_length, # 传递给 RoPE
+                theta=theta,                 # 传递给 RoPE
+                **factory_kwargs
+            )
+            self.layers.append(block)
+
+        # 3. 最终的归一化层
+        self.final_norm = Rmsnorm(d_model=d_model, **factory_kwargs)
+        
+        # 4. 最终的 LM Head (输出投影层)
+        # (我们假设 LM Head 和 词嵌入 不共享权重)
+        self.lm_head = Linear(
+            in_features=d_model,
+            out_features=vocab_size,
+            **factory_kwargs
+        )
+
+    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
+        """
+        执行 TransformerLM 的前向传播。
+
+        参数:
+            token_ids (torch.Tensor): 
+                输入的词元ID, 形状 (batch_size, seq_len)
+        
+        返回:
+            torch.Tensor: 
+                logits (softmax前的分数), 形状 (batch_size, seq_len, vocab_size)
+        """
+        
+        # 1. 获取词嵌入
+        # (B, S) -> (B, S, D)
+        x = self.token_embeddings(token_ids)
+        
+        # 2. 逐层通过 Transformer 块
+        # (B, S, D) -> (B, S, D)
+        for block in self.layers:
+            # (我们的 TransformerBlock.forward 会自动处理 RoPE 和 Causal Mask)
+            x = block(x)
+            
+        # 3. 应用最终的归一化
+        # (B, S, D) -> (B, S, D)
+        x_norm = self.final_norm(x)
+        
+        # 4. 投影到词汇表
+        # (B, S, D) -> (B, S, vocab_size)
+        logits = self.lm_head(x_norm)
+        
+        return logits
