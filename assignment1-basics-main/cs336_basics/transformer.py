@@ -1,8 +1,12 @@
-import torch
+import torch, math, os, typing
 import torch.nn as nn
 from torch.nn.parameter import Parameter
 from torch.optim.optimizer import Optimizer
 from collections.abc import Callable, Iterable
+import numpy as np
+import numpy.typing as npt
+from typing import BinaryIO, IO
+import torch.optim as optim
 
 class Linear(nn.Module):
     """
@@ -1037,3 +1041,137 @@ class AdamW(Optimizer):
                 p.data.addcdiv_(m_hat_t, denom, value=-lr)
 
         return loss
+
+def learning_rate_schedule(it: int, max_learning_rate: float, min_learning_rate: float, warmup_iters: int, cosine_cycle_iters: int,) -> float:
+    output_learning_rate = 0
+    if(it < warmup_iters): 
+        output_learning_rate = it / warmup_iters * max_learning_rate
+    elif(it <= cosine_cycle_iters):
+        output_learning_rate = min_learning_rate + 0.5 * (1 + math.cos((it - warmup_iters) / (cosine_cycle_iters - warmup_iters)* math.pi)) * (max_learning_rate - min_learning_rate)
+    else:
+        output_learning_rate = min_learning_rate
+    
+    return output_learning_rate
+
+def gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
+    epsilon = 1e-6
+    total_norm = 0
+    for p in parameters:
+        if p.grad is not None:
+            total_norm += p.grad.data.norm(2).item() ** 2
+    total_norm = total_norm ** 0.5
+    if(total_norm >= max_l2_norm):
+        clipping_value = max_l2_norm / (total_norm + epsilon)
+        for p in parameters:
+            if p.grad is not None:
+                p.grad.data.mul_(clipping_value)
+
+def get_batch(dataset: npt.NDArray, batch_size: int, context_length: int, device: str) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    从数据集中随机采样一个批次的 inputs 和 targets。
+
+    参数:
+        dataset (np.array): 1D numpy 数组, 包含所有 token ID。
+        batch_size (int): 批次大小。
+        context_length (int): 每个序列的长度 (S)。
+        device (str): PyTorch 设备 (例如 'cpu' or 'cuda:0')。
+
+    返回:
+        tuple[torch.Tensor, torch.Tensor]:
+            - inputs: (B, S)
+            - targets: (B, S)
+    """
+    # 1. 确定我们可以从哪里开始采样
+    # 我们总共需要 (context_length + 1) 个 token 来创建一对 (inputs, targets)
+    # 所以最后一个合法的起始索引是:
+    max_start_index = len(dataset) - context_length - 1
+
+    # 2. 随机选择 'batch_size' 个起始索引
+    # `np.random.randint` 的上界是 "exclusive" (不包含)
+    # size=(batch_size,)
+    start_indices = np.random.randint(0, max_start_index + 1, size=(batch_size,))
+
+    # 3. 为 inputs 和 targets 创建数据块
+    # 我们可以使用列表推导式 (list comprehension) 来高效地抓取所有数据
+    
+    # inputs_list 是一个包含 `batch_size` 个 1D numpy 数组的 Python 列表
+    # 每个数组的长度都是 `context_length`
+    # (例如: [i : i + context_length])
+    inputs_list = [
+        dataset[i : i + context_length] 
+        for i in start_indices
+    ]
+    
+    # targets_list 也是, 但它是从 i+1 开始的
+    # (例如: [i + 1 : i + context_length + 1])
+    targets_list = [
+        dataset[i + 1 : i + context_length + 1] 
+        for i in start_indices
+    ]
+    
+    # 4. 将 Python 列表 "堆叠" 成 2D NumPy 数组
+    # (B, S)
+    inputs_np = np.stack(inputs_list)
+    targets_np = np.stack(targets_list)
+    
+    # 5. 将 NumPy 数组转换为 PyTorch 张量, 并移动到指定设备
+    # 语言模型的输入/目标必须是整数 (LongTensor)
+    inputs = torch.tensor(inputs_np, dtype=torch.long, device=device)
+    targets = torch.tensor(targets_np, dtype=torch.long, device=device)
+    
+    return inputs, targets
+
+def save_checkpoint(model: nn.Module, 
+                      optimizer: optim.Optimizer, 
+                      iteration: int, 
+                      out: str | os.PathLike | typing.BinaryIO | typing.IO[bytes]):
+    """
+    将模型、优化器和迭代次数的状态保存到 'out'。
+
+    参数:
+        model: 要保存的 nn.Module 模型。
+        optimizer: 要保存的 optim.Optimizer 优化器。
+        iteration: int, 当前的迭代/步数。
+        out: 要保存到的文件路径或类文件对象。
+    """
+    
+    # 1. 构造一个字典来保存所有状态
+    checkpoint = {
+        'iteration': iteration,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        # 你也可以在这里添加其他信息, 比如 loss, 随机种子状态等
+    }
+    
+    # 2. 使用 torch.save 保存字典
+    torch.save(checkpoint, out)
+
+
+def load_checkpoint(src: str | os.PathLike | typing.BinaryIO | typing.IO[bytes], 
+                      model: nn.Module, 
+                      optimizer: optim.Optimizer) -> int:
+    """
+    从 'src' 加载检查点, 恢复模型和优化器的状态。
+
+    参数:
+        src: 要从中加载的文件路径或类文件对象。
+        model: 要恢复状态的 nn.Module 模型 (必须具有相同的架构)。
+        optimizer: 要恢复状态的 optim.Optimizer 优化器。
+        
+    返回:
+        int: 保存的迭代次数。
+    """
+    # 1. 加载检查点字典 (确保映射到正确的设备, e.g., 'cpu' or 'cuda')
+    #    我们假设模型已经在正确的设备上了
+    checkpoint = torch.load(src)
+    
+    # 2. 恢复模型的状态
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # 3. 恢复优化器的状态
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    
+    # 4. 恢复并返回迭代次数
+    iteration = checkpoint['iteration']
+    
+    return iteration

@@ -4,6 +4,7 @@ import os, sys, pathlib
 from collections.abc import Iterable
 from typing import IO, Any, BinaryIO
 
+import numpy as np
 import numpy.typing as npt
 import torch
 from jaxtyping import Bool, Float, Int
@@ -669,7 +670,9 @@ def run_get_batch(
         is the sampled input sequences, and the second tuple item is the corresponding
         language modeling labels.
     """
-    raise NotImplementedError
+    output = get_batch(dataset, batch_size, context_length, device)
+
+    return output
 
 
 def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
@@ -716,7 +719,9 @@ def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm:
 
     The gradients of the parameters (parameter.grad) should be modified in-place.
     """
-    raise NotImplementedError
+    output = gradient_clipping(parameters,max_l2_norm)
+
+    return output
 
 
 def get_adamw_cls() -> Any:
@@ -751,7 +756,9 @@ def run_get_lr_cosine_schedule(
     Returns:
         Learning rate at the given iteration under the specified schedule.
     """
-    raise NotImplementedError
+
+    output = learning_rate_schedule(it,max_learning_rate,min_learning_rate,warmup_iters,cosine_cycle_iters)
+    return output
 
 
 def run_save_checkpoint(
@@ -770,7 +777,8 @@ def run_save_checkpoint(
             we've completed.
         out (str | os.PathLike | BinaryIO | IO[bytes]): Path or file-like object to serialize the model, optimizer, and iteration to.
     """
-    raise NotImplementedError
+    output = save_checkpoint(model, optimizer, iteration, out)  
+    return output
 
 
 def run_load_checkpoint(
@@ -791,7 +799,8 @@ def run_load_checkpoint(
     Returns:
         int: the previously-serialized number of iterations.
     """
-    raise NotImplementedError
+    output = load_checkpoint(src, model, optimizer)
+    return output
 
 
 def get_tokenizer(
