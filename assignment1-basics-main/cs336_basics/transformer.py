@@ -7,6 +7,7 @@ import numpy as np
 import numpy.typing as npt
 from typing import BinaryIO, IO
 import torch.optim as optim
+import torch.nn.functional as F
 
 class Linear(nn.Module):
     """
@@ -1175,3 +1176,127 @@ def load_checkpoint(src: str | os.PathLike | typing.BinaryIO | typing.IO[bytes],
     iteration = checkpoint['iteration']
     
     return iteration
+
+@torch.no_grad()
+def decoding_generate(
+    model: "TransformerLM", # (使用引号来"前向引用" TransformerLM 类)
+    prompt_ids: torch.Tensor,
+    max_new_tokens: int,
+    eos_token_id: int,
+    temperature: float = 1.0,
+    top_p: float = 1.0,
+) -> torch.Tensor:
+    """
+    从 TransformerLM 模型自回归地生成 token 序列。
+    参数:
+        model (TransformerLM): 我们训练好的、从 0 实现的 TransformerLM 实例。
+        prompt_ids (torch.Tensor): 
+            输入的“提示”序列, 形状 (batch_size, seq_len)
+            (注意：此实现假设 batch_size=1)
+        max_new_tokens (int): 要生成的最大新 token 数量。
+        eos_token_id (int): "End-of-Sentence" (句子结束) 标记的 ID。
+                            生成此 ID 将停止循环。
+        temperature (float): 
+            Softmax 温度缩放。
+            T > 1.0: 使分布更“平坦” (更随机, 更“有创意”)
+            T < 1.0: 使分布更“尖锐” (更倾向于高概率词, 更“确定”)
+        top_p (float): 
+            Top-p (Nucleus) 采样的阈值。
+            p=0.9: 只考虑概率总和加起来达到 90% 的最小 token 集合。
+            p=1.0: 禁用 Top-p (考虑所有 token)。
+
+    返回:
+        torch.Tensor: 
+            完整的 token 序列 (prompt + new_tokens), 
+            形状 (batch_size, seq_len + new_tokens)
+    """
+    # 将模型设置为评估模式 (例如，关闭 dropout, 如果有的话)
+    model.eval()
+    
+    # 假设 'model' 实例上存储了 'context_length'
+    # (这是在 TransformerLM.__init__ 中设置的)
+    try:
+        context_length = model.context_length
+    except AttributeError:
+        # 这是一个备用方案，以防你没有在 __init__ 中存储它
+        # 我们从 `layers` -> `block` -> `rope` 中反向推断
+        context_length = model.layers[0].rope.cos_cache.shape[0]
+
+    # 将 `idx` 初始化为输入的 prompt
+    idx = prompt_ids
+
+    for _ in range(max_new_tokens):
+        
+        # --- 1. 裁剪上下文 (Context Cropping) ---
+        # 确保我们传递给模型的序列不会超过其 RoPE 缓存 (context_length)
+        # `idx_cond` 是我们真正送入模型的 "条件"
+        # 形状: (B, S) or (B, min(current_len, context_length))
+        idx_cond = idx[:, -context_length:]
+
+        # --- 2. 前向传播 (Forward Pass) ---
+        # (B, S_cond, D) -> (B, S_cond, V)
+        logits = model(idx_cond)
+        
+        # --- 3. 聚焦最后一个 Token (Focus) ---
+        # 我们只关心模型对“下一个词”的预测
+        # 形状: (B, V)
+        logits_next_token = logits[:, -1, :]
+
+        # --- 4. 应用温度 (Temperature) ---
+        # (如果 temp=1.0, 这一步什么也不做)
+        if temperature != 1.0:
+            logits_next_token = logits_next_token / temperature
+
+        # --- 5. 应用 Top-p (Nucleus) 采样 ---
+        if top_p < 1.0:
+            # a. 首先，对 logits 应用 softmax 得到概率
+            # (这里使用 PyTorch 内置的 softmax 更高效)
+            probs = F.softmax(logits_next_token, dim=-1) # (B, V)
+
+            # b. 对概率进行排序 (降序)
+            probs_sorted, indices_sorted = torch.sort(probs, descending=True, dim=-1)
+
+            # c. 计算累积概率
+            probs_cumsum = torch.cumsum(probs_sorted, dim=-1) # (B, V)
+            
+            # d. 创建一个掩码, 找出 "超出" top_p 阈值的 token
+            # (B, V) (bool)
+            remove_mask = probs_cumsum > top_p
+            # 我们必须保留至少一个 token (第一个), 所以将第一个移位
+            remove_mask[:, 1:] = remove_mask[:, :-1].clone()
+            remove_mask[:, 0] = False # 永远不要移除第一个 (概率最高的)
+
+            # e. 将这个 (已排序的) 掩码 "分散" (scatter) 回原始的 token 顺序
+            # 创建一个 (B, V) 的掩码, 在要移除的 token 位置上为 True
+            indices_to_remove = torch.zeros_like(probs, dtype=torch.bool).scatter_(
+                dim=-1, index=indices_sorted, src=remove_mask
+            )
+
+            # f. 将 logits 中要移除的 token 的分数设置为 -inf
+            logits_next_token = logits_next_token.masked_fill(indices_to_remove, float('-inf'))
+        
+        # --- 6. 最终采样 (Sample) ---
+        # (如果应用了 Top-p, -inf 的 logits 会自动获得 0 概率)
+        # (如果没应用 Top-p, 就从完整的 logits 中采样)
+        
+        # 再次应用 softmax, 得到 (可能已被 top-p 裁剪过的) 最终概率
+        final_probs = F.softmax(logits_next_token, dim=-1) # (B, V)
+        
+        # 从该分布中抽取 1 个样本
+        # `torch.multinomial` 是我们需要的“采样器”
+        idx_next = torch.multinomial(final_probs, num_samples=1) # (B, 1)
+
+        # --- 7. 追加 (Append) 和 停止 (Stop) ---
+        
+        # 将新采样的 token ID 追加到我们的序列 `idx` 中
+        idx = torch.cat((idx, idx_next), dim=1) # (B, S + 1)
+        
+        # 检查是否生成了 EOS token
+        # (我们假设 batch_size=1 来进行这个简单的检查)
+        if idx_next.item() == eos_token_id:
+            break
+            
+    # 将模型设置回训练模式
+    model.train()
+    
+    return idx

@@ -11,7 +11,7 @@ from transformer import *
 # 导入我们从 0 开始实现的所有组件！
 # -----------------------------------------------------------------------------
 try:
-    from solution import (
+    from transformer import (
         TransformerLM,
         AdamW,
         get_lr_cosine_schedule,
@@ -23,8 +23,8 @@ try:
     )
 except ImportError:
     print("="*80)
-    print("错误：无法从 'solution.py' 导入你的实现。")
-    print("请确保 'train.py' 和 'solution.py' 在同一个目录中。")
+    print("错误：无法从 'transfomer.py' 导入你的实现。")
+    print("请确保 'train.py' 和 'transformer.py' 在同一个目录中。")
     print("="*80)
     sys.exit(1)
 
