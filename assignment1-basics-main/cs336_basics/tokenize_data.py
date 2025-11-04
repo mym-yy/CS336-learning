@@ -45,39 +45,59 @@ TRAIN_BIN_PATH = OUTPUT_DIR / "TinyStories" / "train.bin"
 VALID_BIN_PATH = OUTPUT_DIR / "TinyStories" / "val.bin"
 
 # -----------------------------------------------------------------------------
-# 辅助函数 (!!! 关键修复 !!!)
+# 辅助函数 (!!! 最终修复 !!!)
 # -----------------------------------------------------------------------------
 def load_tokenizer_from_trained_files(vocab_path, merges_path) -> Tokenizer:
     """
     加载由 train_tokenizer.py 保存的【特定格式】的 vocab 和 merges 文件。
     
-    (我们不使用 Tokenizer.from_files, 因为那个方法期望
-     不同的 Base64 格式, 而你的 train_tokenizer.py 保存的是
-     易于阅读的 'latin-1' 格式)
+    我们必须使用 'latin-1' 来编码字符串，
+    以完美逆转 'latin-1' 的解码过程。
     """
     print(f"正在从 {vocab_path} 和 {merges_path} 加载分词器...")
 
     # 1. 加载词汇表 (JSON, 值为 latin-1 字符串)
+    print("  > 加载 vocab.json...")
     with open(vocab_path, 'r', encoding='utf-8') as f:
         json_vocab_str_vals = json.load(f)
-    # 将 key 转为 int, 将 value (latin-1 字符串) 转回 bytes
-    vocab = {int(k): v.encode('latin-1') for k, v in json_vocab_str_vals.items()}
+        
+    vocab = {}
+    for k_str, v_str in json_vocab_str_vals.items():
+        vocab[int(k_str)] = v_str.encode('latin-1')
 
     # 2. 加载合并规则 (Text 文件, 空格分隔, latin-1 字符串)
+    print("  > 加载 merges.txt...")
     merges = []
     with open(merges_path, 'r', encoding='utf-8') as f:
         for line in f:
             if line.startswith("#"): # 跳过注释行
                 continue
-            parts = line.strip().split()
+            
+            # --- 这是唯一的修改 ---
+            # 旧的、有 bug 的代码:
+            # parts = line.strip().split()
+            
+            # 新的、健壮的代码:
+            # 1. 只移除行尾的换行符，而不是所有空白
+            # 2. 只在第一个空格处分割一次
+            try:
+                # 这会将 "a \n" 分割为 ['a', '\n']
+                # 这会将 "a b" 分割为 ['a', 'b']
+                part1, part2 = line.rstrip('\n').split(' ', 1)
+                parts = [part1, part2]
+            except ValueError:
+                # 处理空行或没有空格的行
+                parts = [] 
+            # --- 修改结束 ---
+
             if len(parts) == 2:
-                # 将两个 token (latin-1 字符串) 转回 bytes
                 merges.append((parts[0].encode('latin-1'), parts[1].encode('latin-1')))
     
     # 3. 获取特殊 tokens (硬编码, 与 train_tokenizer.py 一致)
     special_tokens = ["<|endoftext|>"]
 
     # 4. 实例化 Tokenizer
+    print(f"  > 实例化 Tokenizer (词表大小: {len(vocab)}, 合并规则: {len(merges)})...")
     return Tokenizer(vocab, merges, special_tokens)
 
 # -----------------------------------------------------------------------------

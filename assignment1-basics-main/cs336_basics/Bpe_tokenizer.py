@@ -14,8 +14,7 @@ from typing import (
 class Tokenizer:
     """
     一个 BPE 分词器，实现了 encode 和 decode 方法，并支持特殊 token。
-    """
-    
+    """ 
     def __init__(self, 
                  vocab: Dict[int, bytes], 
                  merges: List[Tuple[bytes, bytes]], 
@@ -190,7 +189,8 @@ class Tokenizer:
             ids = [self.vocab_inv[token] for token in tokens]
         except KeyError as e:
             # 这是一个严重错误，意味着合并规则产生了词汇表中不存在的 token
-            print(f"严重错误: Token {e} (bytes: {e.hex()}) 由合并规则产生 "
+            missing_key = e.args[0]
+            print(f"严重错误: Token {missing_key} (bytes: {missing_key.hex()}) 由合并规则产生 "
                   f"但它不在词汇表中。您的 vocab 和 merges 文件不匹配。")
             raise e
             

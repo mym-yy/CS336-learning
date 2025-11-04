@@ -5,7 +5,7 @@ import sys
 import pathlib
 import json
 import os
-
+print("!!! HELLO, I AM THE NEW LATIN-1 SAVER VERSION !!!")
 # --- 1. 设置路径 ---
 # SCRIPT_DIR 指向脚本所在的目录:
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -65,9 +65,10 @@ def main():
     
     # 保存词汇表 (vocab)
     # vocab 是 {int: bytes} 格式. JSON 无法直接保存 bytes.
-    # 我们使用 'latin-1' 编码将其转换为字符串，'latin-1' 可以
+    # 我们使用 'latin-1' 编码将其转换为字符串，'latin-1' 
     # 完美地将 0-255 的所有字节一对一映射为 Unicode 字符。
     print(f"正在保存词汇表到 {OUTPUT_VOCAB_PATH}...")
+    # json_safe_vocab = {token_id: b.decode('utf-8', errors='ignore').replace(" ", "▁") for token_id, b in vocab.items()}
     json_safe_vocab = {token_id: b.decode('latin-1') for token_id, b in vocab.items()}
     with open(OUTPUT_VOCAB_PATH, 'w', encoding='utf-8') as f:
         json.dump(json_safe_vocab, f, ensure_ascii=False, indent=2)
@@ -79,7 +80,6 @@ def main():
         f.write("# BPE Merges (trained on TinyStories)\n")
         f.write("# Format: token1 token2\n")
         for b1, b2 in merges:
-            # 同样使用 'latin-1' 编码
             s1 = b1.decode('latin-1')
             s2 = b2.decode('latin-1')
             f.write(f"{s1} {s2}\n")
