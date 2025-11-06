@@ -14,7 +14,7 @@ try:
     from transformer import (
         TransformerLM,
         AdamW,
-        get_lr_cosine_schedule,
+        learning_rate_schedule,
         get_batch,
         cross_entropy,
         save_checkpoint,
@@ -42,12 +42,12 @@ def get_args():
     parser = argparse.ArgumentParser(description="从 0 开始训练 TransformerLM")
 
     # --- 数据和 IO ---
-    parser.add_argument('--data_dir', type=str, default='data', help='存放 train.bin 和 val.bin 的数据目录')
+    parser.add_argument('--data_dir', type=str, default='../outputfile/data_bin/TinyStories', help='存放 train.bin 和 val.bin 的数据目录')
     parser.add_argument('--checkpoint_dir', type=str, default='checkpoints', help='存放检查点 (checkpoints) 的目录')
     parser.add_argument('--load_checkpoint_path', type=str, default=None, help='从这个检查点路径恢复训练')
     
     # --- 模型超参数 (Model Hyperparameters) ---
-    parser.add_argument('--vocab_size', type=int, default=50257, help='词汇表大小 (例如 GPT-2)')
+    parser.add_argument('--vocab_size', type=int, default=10000, help='词汇表大小 (例如 GPT-2)')
     parser.add_argument('--context_length', type=int, default=1024, help='上下文长度 (S)')
     parser.add_argument('--num_layers', type=int, default=12, help='Transformer 块的数量 (L)')
     parser.add_argument('--d_model', type=int, default=768, help='模型维度 (D)')
@@ -56,7 +56,7 @@ def get_args():
     parser.add_argument('--rope_theta', type=float, default=10000.0, help='RoPE 的 theta 值')
 
     # --- 训练超参数 (Training Hyperparameters) ---
-    parser.add_argument('--batch_size', type=int, default=32, help='批次大小 (B)')
+    parser.add_argument('--batch_size', type=int, default=8, help='批次大小 (B)')
     parser.add_argument('--max_iters', type=int, default=5000, help='总训练迭代步数')
     parser.add_argument('--grad_clip', type=float, default=1.0, help='梯度裁剪的最大 L2 范数')
     
@@ -173,12 +173,12 @@ def main():
     for iter_num in range(start_iter, args.max_iters):
         
         # --- a. 获取学习率 (LR Schedule) ---
-        lr = get_lr_cosine_schedule(
-            t=iter_num,
-            alpha_max=args.lr,
-            alpha_min=args.min_lr,
-            T_w=args.warmup_iters,
-            T_c=args.max_iters # T_c 是总迭代步数
+        lr = learning_rate_schedule(
+            it=iter_num,
+            max_learning_rate=args.lr,
+            min_learning_rate=args.min_lr,
+            warmup_iters=args.warmup_iters,
+            cosine_cycle_iters=args.max_iters # T_c 是总迭代步数
         )
         # 将 LR 应用到优化器
         for param_group in optimizer.param_groups:
