@@ -3,6 +3,9 @@
 For a full description of the assignment, see the assignment handout at
 [cs336_spring2025_assignment1_basics.pdf](./cs336_spring2025_assignment1_basics.pdf)
 
+训练模型所需train_bin文件需要由tokenize_data.py生成，文件太大不push上来
+generate所需的checkpoint文件也太大了，也不push上来
+
 If you see any issues with the assignment handout or code, please feel free to
 raise a GitHub issue or open a pull request with a fix.
 
