@@ -118,9 +118,9 @@ def main():
     
     # --- 模型参数 (!! 必须匹配你的训练 !!) ---
     # 这些是 17M 模型的参数
-    parser.add_argument('--num_layers', type=int, default=6, help='Transformer 块的数量 (L)')
-    parser.add_argument('--d_model', type=int, default=384, help='模型维度 (D)')
-    parser.add_argument('--num_heads', type=int, default=6, help='注意力头的数量 (H)')
+    parser.add_argument('--num_layers', type=int, default=12, help='Transformer 块的数量 (L)')
+    parser.add_argument('--d_model', type=int, default=768, help='模型维度 (D)')
+    parser.add_argument('--num_heads', type=int, default=12, help='注意力头的数量 (H)')
     
     # --- 词汇表和数据路径 (!! 必须匹配你的训练 !!) ---
     parser.add_argument('--vocab_size', type=int, default=10000, help='你的词汇表大小 (来自 BPE 训练)')
